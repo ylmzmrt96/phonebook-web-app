@@ -10,35 +10,188 @@ Description: |
   environment on EC2, and to deploy Phonebook Application on Flask Server after downloading the app code 
   from Github repository.
 Parameters:
- 
-  
+  Subnets:
+    Description: Choose you subnets
+    Type: List<AWS::EC2::Subnet::Id>
+
+  KeyName:
+    Description: Please enter your Key pair
+    Type: AWS::EC2::KeyPair::KeyName
+
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+
+  myVPC:
+    Description: choose your vpc
+    Type: AWS::EC2::VPC::Id
+
+  myDbname:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /clarusway/phonebook/dbname
+
 Resources:
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 1
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LT
+        Version: !GetAtt LT.LatestVersionNumber
+      MaxSize: 3
+      MinSize: 1
+      TargetGroupARNs:
+        - !Ref TG
+      VPCZoneIdentifier: !Ref Subnets # not array
 
-  autoScalingGroup:
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: # Required
+        - TargetGroupArn: !Ref TG
+          Type: forward
+      LoadBalancerArn: !Ref ALB # Required
+      Port: 80 # Required
+      Protocol: HTTP # Required
 
-  applicationLoadBalancerListener:
-    
+  LT:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t2.micro
+        IamInstanceProfile:
+          Name: !Ref myInstanceProfile
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !GetAtt eC2SecGrp.GroupId
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub Web Server of ${AWS::StackName} Stack
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #! /bin/bash -x
+              dnf update -y
+              dnf install python3 -y
+              dnf install python-pip -y
+              pip3 install Flask==2.3.3
+              pip3 install Flask-MySql
+              pip3 install boto3
+              dnf install git -y
+              echo "${MyDBURI}" > /home/ec2-user/dbserver.endpoint
+              cd /home/ec2-user
+              TOKEN=$(aws --region=us-east-1 ssm get-parameter --name /clarusway/phonebook/token --with-decryption --query 'Parameter.Value' --output text)
+              git clone https://$TOKEN@github.com/ylmzmrt96/phonebook-web-app.git
+              python3 /home/ec2-user/phonebook-web-app/solutions/phonebook-app.py
+            - MyDBURI: !GetAtt rDSInstance.Endpoint.Address
 
-  applicationLoadBalancer:
-    
+  TG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 10
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref myVPC
 
-  launchTemplate:
-   
+  myInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: osvaldo-phonebook-19-ip
+      Roles: # Required
+        - !Ref mySSMRole
 
+  mySSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: allow ssm
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      RoleName: osvaldo-SSM-phonebook-19
 
-  targetGroup:
-    
+  rDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      BackupRetentionPeriod: 0
+      DBInstanceClass: db.t3.micro
+      DBInstanceIdentifier: osvaldo-phoenebook-19
+      DBName: !Ref myDbname # '{{resolve:ssm:/clarusway/phonebook/dbname:1}}'
+      DBSecurityGroups:
+        - !Ref rDSSecGrp
+      DeleteAutomatedBackups: true
+      Engine: mysql
+      EngineVersion: 8.0.35
+      MasterUserPassword: "{{resolve:ssm-secure:/clarusway/phonebook/password:1}}"
+      MasterUsername: "{{resolve:ssm:/clarusway/phonebook/username:1}}"
+      MultiAZ: false
+      Port: 3306
+      PubliclyAccessible: true
+    DeletionPolicy: Delete
 
-  dBInstance:
-    
+  rDSSecGrp:
+    Type: AWS::RDS::DBSecurityGroup
+    Properties:
+      DBSecurityGroupIngress: # Required
+        - EC2SecurityGroupId: !GetAtt eC2SecGrp.GroupId
+      GroupDescription: allow 3306 from ec2secgrp # Required
+      Tags:
+        - Key: Name
+          Value: osvaldo-phonebook-secgrp-19
 
-  wBSecurityGroup:
-   
+  eC2SecGrp:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow ssh from anywhere and http from alb # Required
+      GroupName: osvaldo-phonebook-ec2-secgrp-19
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !GetAtt aLBSecGrp.GroupId # !Ref aLBSecGrp
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
 
-  webServerSecurityGroup:
-    
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref myVPC
 
-  applicationLoadBalancerSecurityGroup:
-    
+  aLBSecGrp:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh and http # Required
+      GroupName: osvaldo-phonebook-alb-secgrp-19
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref myVPC
+
 Outputs:
-  
+  WebsiteURL:
+    Value: !Sub
+      - http://${ALBAddress}
+      - ALBAddress: !GetAtt ALB.DNSName
+    Description: Phonebook Application Load Balancer URL
