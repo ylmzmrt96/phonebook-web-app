@@ -56,6 +56,16 @@ Resources:
       Port: 80 # Required
       Protocol: HTTP # Required
 
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups:
+        - !GetAtt aLBSecGrp.GroupId
+      Subnets: !Ref Subnets
+      Type: application
+
   LT:
     Type: AWS::EC2::LaunchTemplate
     Properties:
